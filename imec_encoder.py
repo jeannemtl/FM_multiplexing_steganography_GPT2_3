@@ -5,7 +5,7 @@ import pickle
 
 class MinEntropyCouplingSteganography:
     """
-    Real iMEC implementation with extensive debugging.
+    Real iMEC implementation with context window management.
     """
     
     def __init__(self, model_name='gpt2', block_size_bits=16):
@@ -20,13 +20,15 @@ class MinEntropyCouplingSteganography:
         self.block_size_bits = block_size_bits
         self.n_blocks = None
         self.vocab_size = len(self.tokenizer)
+        self.MAX_CONTEXT = 1024  # GPT-2's max context length
         
         print(f"iMEC initialized with {block_size_bits}-bit blocks")
         print(f"Vocabulary size: {self.vocab_size}")
+        print(f"Max context: {self.MAX_CONTEXT} tokens")
     
     def mec_subroutine(self, mu_i, covertext_probs):
         """
-        Approximate MEC subroutine - FIXED VERSION
+        Approximate MEC subroutine.
         """
         vocab_size = len(covertext_probs)
         
@@ -80,13 +82,12 @@ class MinEntropyCouplingSteganography:
     
     def sample_from_coupling(self, coupling, cipher_value):
         """
-        Sample token from coupling - FIXED VERSION
+        Sample token from coupling.
         """
         # Get all possible tokens for this cipher value
         possible = [(t, mass) for (c, t), mass in coupling.items() if c == cipher_value]
         
         if not possible:
-            print(f"⚠️  No coupling for cipher {cipher_value}")
             return None
         
         tokens, masses = zip(*possible)
@@ -97,7 +98,6 @@ class MinEntropyCouplingSteganography:
         valid_mask = (tokens >= 0) & (tokens < self.vocab_size)
         
         if not np.any(valid_mask):
-            print(f"⚠️  No valid tokens in coupling")
             return None
         
         # Filter to valid only
@@ -114,7 +114,7 @@ class MinEntropyCouplingSteganography:
     
     def update_posterior(self, coupling, cipher_probs, sampled_token):
         """
-        Update posterior - FIXED VERSION
+        Update posterior distribution.
         """
         n_cipher = len(cipher_probs)
         posterior = np.zeros(n_cipher, dtype=float)
@@ -123,7 +123,6 @@ class MinEntropyCouplingSteganography:
         possible = [(c, mass) for (c, t), mass in coupling.items() if t == sampled_token]
         
         if not possible:
-            # Token not in coupling - return uniform
             return np.ones(n_cipher) / n_cipher
         
         # Apply Bayes rule
@@ -143,7 +142,7 @@ class MinEntropyCouplingSteganography:
     def encode_imec(self, ciphertext_bits, context, max_tokens=2000, 
                     entropy_threshold=0.1):
         """
-        iMEC encoding with better error handling
+        iMEC encoding with context window management.
         """
         print(f"\n{'='*80}")
         print(f"iMEC ENCODING")
@@ -204,7 +203,6 @@ class MinEntropyCouplingSteganography:
                 gamma_j = self.mec_subroutine(mu[i_star], covertext_probs)
                 
                 if not gamma_j:
-                    print(f"⚠️  Empty coupling at token {j}")
                     failed_samples += 1
                     if failed_samples > 10:
                         print("Too many failed samples, stopping")
@@ -216,16 +214,14 @@ class MinEntropyCouplingSteganography:
                 S_j = self.sample_from_coupling(gamma_j, cipher_value)
                 
                 if S_j is None:
-                    # Fallback: sample from covertext
                     S_j = int(np.random.choice(self.vocab_size, p=covertext_probs))
                     failed_samples += 1
                 
-                # CRITICAL: Validate before using
+                # Validate
                 if not isinstance(S_j, (int, np.integer)):
                     S_j = int(S_j)
                 
                 if S_j < 0 or S_j >= self.vocab_size:
-                    print(f"⚠️  Invalid token {S_j}, using fallback")
                     S_j = int(np.random.choice(self.vocab_size, p=covertext_probs))
                     failed_samples += 1
                 
@@ -234,10 +230,17 @@ class MinEntropyCouplingSteganography:
                 # Update posterior
                 mu[i_star] = self.update_posterior(gamma_j, mu[i_star], S_j)
                 
-                # Update context
+                # Update context WITH TRUNCATION
                 try:
                     new_token_tensor = torch.tensor([[S_j]], device=self.device, dtype=torch.long)
                     input_ids = torch.cat([input_ids, new_token_tensor], dim=1)
+                    
+                    # CRITICAL: Keep context within GPT-2's limit
+                    if input_ids.shape[1] > self.MAX_CONTEXT:
+                        input_ids = input_ids[:, -self.MAX_CONTEXT:]
+                        if (j + 1) % 500 == 0:
+                            print(f"  (Context truncated to {self.MAX_CONTEXT} tokens)")
+                    
                 except Exception as e:
                     print(f"⚠️  Error updating input_ids: {e}")
                     break
@@ -254,7 +257,7 @@ class MinEntropyCouplingSteganography:
     
     def decode_imec(self, stegotext_tokens, context, n_blocks, block_size_bits):
         """
-        iMEC decoding
+        iMEC decoding with context management.
         """
         print(f"\n{'='*80}")
         print(f"iMEC DECODING")
@@ -286,6 +289,10 @@ class MinEntropyCouplingSteganography:
                     input_ids,
                     torch.tensor([[s_j]], device=self.device, dtype=torch.long)
                 ], dim=1)
+                
+                # CRITICAL: Keep context within limit
+                if input_ids.shape[1] > self.MAX_CONTEXT:
+                    input_ids = input_ids[:, -self.MAX_CONTEXT:]
                 
                 if (j + 1) % 100 == 0:
                     print(f"  Processed {j+1} tokens")
@@ -325,7 +332,18 @@ if __name__ == "__main__":
     print(f"Bits: {ciphertext_bits} ({len(ciphertext_bits)} bits)")
     
     context = "The future of artificial intelligence"
-    tokens = imec.encode_imec(ciphertext_bits, context, max_tokens=200)
+    tokens = imec.encode_imec(ciphertext_bits, context, max_tokens=500)
     
     print(f"\nGenerated {len(tokens)} tokens")
-    print(f"Text: {imec.tokenizer.decode(tokens)[:100]}...")
+    text = imec.tokenizer.decode(tokens)
+    print(f"Text: {text[:150]}...")
+    
+    n_blocks = len(ciphertext_bits) // 16 + (1 if len(ciphertext_bits) % 16 else 0)
+    recovered = imec.decode_imec(tokens, context, n_blocks, 16)
+    
+    recovered_bytes = bytes(int(recovered[i:i+8], 2) 
+                           for i in range(0, len(message_bytes)*8, 8))
+    recovered_msg = recovered_bytes.decode('utf-8', errors='ignore')
+    
+    print(f"\nRecovered: {recovered_msg}")
+    print(f"Match: {message == recovered_msg}")
