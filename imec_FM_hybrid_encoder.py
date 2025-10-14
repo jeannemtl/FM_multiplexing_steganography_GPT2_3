@@ -61,7 +61,7 @@ class FrequencyiMECHybridEncoder:
         
         return bias_signal
     
-    def generate_frequency_modulated(self, context, messages, sequence_length=1000, 
+    def generate_frequency_modulated(self, context, messages, sequence_length=100, 
                                      bias_strength=0.5):
         """
         STAGE 1: Generate frequency-modulated stegotext.
@@ -134,7 +134,7 @@ class FrequencyiMECHybridEncoder:
         obfuscated_tokens = self.imec.encode_imec(
             ciphertext_bits, 
             context, 
-            max_tokens=len(freq_tokens) * 2,  # Allow more tokens
+            max_tokens=2000,
             entropy_threshold=0.1
         )
         
@@ -184,7 +184,7 @@ class FrequencyiMECHybridEncoder:
         
         return recovered_tokens
     
-    def encode_hybrid(self, context, messages, sequence_length=1000):
+    def encode_hybrid(self, context, messages, sequence_length=100):
         """
         Complete hybrid encoding pipeline.
         """
@@ -247,7 +247,7 @@ if __name__ == "__main__":
     output_data = encoder.encode_hybrid(
         context=context,
         messages=messages,
-        sequence_length=1000
+        sequence_length=100
     )
     
     print(f"\nFrequency text preview:")
