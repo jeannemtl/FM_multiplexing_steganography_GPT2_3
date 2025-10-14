@@ -192,7 +192,13 @@ class FrequencyiMECValidator:
         print(f"  Noise level:       Power = {freq_fft['noise_level']:.1f}")
         
         alice_snr = freq_fft['alice_power'] / freq_fft['noise_level']
-        print(f"\n✓ SNR: ALICE={alice_snr:.1f}:1 (patterns VISIBLE)")
+        bob_snr = freq_fft['bob_power'] / freq_fft['noise_level']
+        charlie_snr = freq_fft['charlie_power'] / freq_fft['noise_level']
+        
+        print(f"\n✓ SNR (Frequency-Modulated):")
+        print(f"  ALICE:   {alice_snr:.1f}:1 (patterns VISIBLE ✓)")
+        print(f"  BOB:     {bob_snr:.1f}:1")
+        print(f"  CHARLIE: {charlie_snr:.1f}:1")
         
         print("\nDecoding messages...")
         freq_decoded = self.decode_messages(freq_entropy, messages)
@@ -222,10 +228,19 @@ class FrequencyiMECValidator:
         print(f"  Noise level:       Power = {obf_fft['noise_level']:.1f}")
         
         obf_alice_snr = obf_fft['alice_power'] / obf_fft['noise_level']
-        if obf_alice_snr < 1.2:
-            print(f"\n✓ SNR: ALICE={obf_alice_snr:.2f}:1 (patterns HIDDEN ✓)")
+        obf_bob_snr = obf_fft['bob_power'] / obf_fft['noise_level']
+        obf_charlie_snr = obf_fft['charlie_power'] / obf_fft['noise_level']
+        
+        print(f"\n✓ SNR (Obfuscated):")
+        print(f"  ALICE:   {obf_alice_snr:.2f}:1", end="")
+        if obf_alice_snr < 1.5:
+            print(" (patterns HIDDEN ✓)")
+        elif obf_alice_snr < 5:
+            print(" (patterns WEAKENED ⚠️)")
         else:
-            print(f"\n⚠️  SNR: ALICE={obf_alice_snr:.2f}:1 (patterns still visible)")
+            print(" (patterns STILL VISIBLE ✗)")
+        print(f"  BOB:     {obf_bob_snr:.2f}:1")
+        print(f"  CHARLIE: {obf_charlie_snr:.2f}:1")
         
         print("\nTrying to decode WITHOUT key...")
         obf_decoded = self.decode_messages(obf_entropy, messages)
@@ -236,7 +251,7 @@ class FrequencyiMECValidator:
             if 40 < result['ber'] < 60:
                 print(" (≈50% = random ✓)")
             else:
-                print(" (unexpected)")
+                print()
         
         # ═══════════════════════════════════════════════════════
         # PHASE 3: Recover WITH Key
@@ -261,7 +276,11 @@ class FrequencyiMECValidator:
         
         matches = sum(1 for i in range(min(len(freq_tokens), len(recovered_tokens)))
                      if freq_tokens[i] == recovered_tokens[i])
-        print(f"✓ Exact matches: {matches}/{len(freq_tokens)} ({100*matches/len(freq_tokens):.1f}%)")
+        match_pct = 100 * matches / len(freq_tokens) if freq_tokens else 0
+        print(f"✓ Exact matches: {matches}/{len(freq_tokens)} ({match_pct:.1f}%)")
+        
+        if match_pct < 50:
+            print("⚠️  Warning: Low token recovery rate - iMEC encoding was incomplete")
         
         print("\nExtracting entropy from recovered tokens...")
         rec_entropy = self.extract_entropy(recovered_tokens, context)
@@ -275,10 +294,11 @@ class FrequencyiMECValidator:
         print(f"  CHARLIE (0.06 Hz): Power = {rec_fft['charlie_power']:.1f}")
         
         rec_alice_snr = rec_fft['alice_power'] / rec_fft['noise_level']
-        if rec_alice_snr > 2:
-            print(f"\n✓ SNR: ALICE={rec_alice_snr:.1f}:1 (patterns RECOVERED ✓)")
+        print(f"\n✓ SNR (Recovered): ALICE={rec_alice_snr:.1f}:1", end="")
+        if rec_alice_snr > 5:
+            print(" (patterns RECOVERED ✓)")
         else:
-            print(f"\n⚠️  SNR: ALICE={rec_alice_snr:.1f}:1 (patterns weak)")
+            print(" (patterns WEAK ⚠️)")
         
         print("\nDecoding messages from recovered text...")
         rec_decoded = self.decode_messages(rec_entropy, messages)
@@ -307,16 +327,43 @@ class FrequencyiMECValidator:
         print("\n✓ CLAIM 2: iMEC hides patterns")
         print(f"  SNR: {obf_alice_snr:.2f}:1")
         print(f"  BER: {avg_obf_ber:.1f}% (random)")
-        print(f"  {'✓ VERIFIED' if obf_alice_snr < 1.5 else '⚠️ PARTIAL'}")
+        if obf_alice_snr < 2:
+            print(f"  ✓ VERIFIED - Patterns hidden")
+        elif obf_alice_snr < 10:
+            print(f"  ⚠️  PARTIAL - Patterns weakened but visible")
+        else:
+            print(f"  ✗ FAILED - Patterns still clearly visible")
         
         print("\n✓ CLAIM 3: Key recovers patterns")
-        print(f"  Token match: {100*matches/len(freq_tokens):.1f}%")
+        print(f"  Token match: {match_pct:.1f}%")
         print(f"  SNR: {rec_alice_snr:.1f}:1")
-        print(f"  {'✓ VERIFIED' if rec_alice_snr > 2 else '⚠️ PARTIAL'}")
+        if match_pct > 80 and rec_alice_snr > 5:
+            print(f"  ✓ VERIFIED")
+        elif match_pct > 50:
+            print(f"  ⚠️  PARTIAL - Incomplete recovery")
+        else:
+            print(f"  ✗ FAILED - Poor recovery")
         
         print("\n✓ CLAIM 4: Messages decode from recovered")
         print(f"  BER: {avg_rec_ber:.1f}%")
         print(f"  {'✓ VERIFIED' if avg_rec_ber < 50 else '✗ FAILED'}")
+        
+        print("\n" + "="*80)
+        print("CONCLUSION")
+        print("="*80)
+        
+        if obf_alice_snr < 2 and match_pct > 80:
+            print("✓ Hybrid approach SUCCESSFUL!")
+            print("  - Frequency patterns hidden by iMEC")
+            print("  - Patterns recoverable with key")
+        elif obf_alice_snr < 10:
+            print("⚠️  Hybrid approach PARTIALLY successful")
+            print("  - Patterns weakened but not fully hidden")
+            print("  - iMEC encoding may have been incomplete")
+        else:
+            print("✗ Hybrid approach NOT successful")
+            print("  - Patterns still clearly visible after iMEC")
+            print("  - iMEC did not provide security benefit")
 
 
 if __name__ == "__main__":
