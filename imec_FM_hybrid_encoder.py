@@ -116,21 +116,40 @@ class FrequencyiMECHybridEncoder:
         print(f"\n✓ Frequency modulation complete: {len(freq_tokens)} tokens")
         
         return freq_text, freq_tokens, bias_signals
-    
+
     def apply_imec_obfuscation(self, freq_tokens, context):
         """
         STAGE 2: Apply iMEC to hide frequency patterns.
+        CORRECTED: Encrypt tokens first to create uniform ciphertext.
         """
         print("\n" + "="*80)
-        print("STAGE 2: iMEC OBFUSCATION")
+        print("STAGE 2: iMEC OBFUSCATION (with encryption)")
         print("="*80)
         
-        # Convert frequency tokens to binary ciphertext
+        # Convert frequency tokens to binary (plaintext)
+        bits_per_token = 16
         print(f"\nConverting {len(freq_tokens)} tokens to binary...")
-        ciphertext_bits = ''.join(format(token, '016b') for token in freq_tokens)
-        print(f"Ciphertext: {len(ciphertext_bits)} bits")
+        plaintext_bits = ''.join(format(token, f'0{bits_per_token}b') for token in freq_tokens)
+        print(f"Plaintext: {len(plaintext_bits)} bits")
         
-        # Apply iMEC encoding
+        # ========================================
+        # CRITICAL: Encrypt with one-time pad
+        # ========================================
+        print("\n✓ Generating encryption key (one-time pad)...")
+        encryption_key = np.random.randint(0, 2, len(plaintext_bits), dtype=np.uint8)
+        
+        # XOR encryption to create UNIFORM ciphertext
+        ciphertext_bits = ''.join(
+            str(int(plaintext_bits[i]) ^ int(encryption_key[i]))
+            for i in range(len(plaintext_bits))
+        )
+        print(f"✓ Encrypted to uniform ciphertext: {len(ciphertext_bits)} bits")
+        
+        # Verify uniformity (should be ~50% ones)
+        ones_ratio = sum(int(b) for b in ciphertext_bits) / len(ciphertext_bits)
+        print(f"✓ Ciphertext uniformity check: {ones_ratio:.3f} (should be ~0.5)")
+        
+        # Apply iMEC encoding to UNIFORM ciphertext
         obfuscated_tokens = self.imec.encode_imec(
             ciphertext_bits, 
             context, 
@@ -143,42 +162,81 @@ class FrequencyiMECHybridEncoder:
         print(f"\n✓ iMEC obfuscation complete")
         print(f"✓ Obfuscated to {len(obfuscated_tokens)} tokens")
         
-        # Store metadata for decoding
+        # Store metadata INCLUDING encryption key
         metadata = {
             'n_freq_tokens': len(freq_tokens),
             'block_size_bits': self.imec.block_size_bits,
-            'n_blocks': self.imec.n_blocks
+            'n_blocks': self.imec.n_blocks,
+            'bits_per_token': bits_per_token,
+            'encryption_key': encryption_key  # ← ESSENTIAL!
         }
         
         return obfuscated_text, obfuscated_tokens, metadata
     
     def imec_decode_tokens(self, obfuscated_tokens, context, metadata):
         """
-        STAGE 3: Decode iMEC to recover frequency-modulated tokens.
+        STAGE 3: Decode iMEC AND decrypt to recover frequency-modulated tokens.
         """
         print("\n" + "="*80)
-        print("STAGE 3: iMEC DECODING")
+        print("STAGE 3: iMEC DECODING + DECRYPTION")
         print("="*80)
         
-        # Decode with iMEC
-        recovered_bits = self.imec.decode_imec(
+        # Step 1: iMEC decode (stegotext → ciphertext)
+        print("\n✓ Applying iMEC decoding...")
+        recovered_ciphertext = self.imec.decode_imec(
             obfuscated_tokens,
             context,
             metadata['n_blocks'],
             metadata['block_size_bits']
         )
+        print(f"✓ Recovered ciphertext: {len(recovered_ciphertext)} bits")
         
-        # Convert binary back to tokens
+        # ========================================
+        # CRITICAL: Decrypt with one-time pad
+        # ========================================
+        print("\n✓ Decrypting with one-time pad...")
+        encryption_key = metadata['encryption_key']
+        
+        # XOR decryption (ciphertext → plaintext)
+        min_len = min(len(recovered_ciphertext), len(encryption_key))
+        recovered_plaintext = ''.join(
+            str(int(recovered_ciphertext[i]) ^ int(encryption_key[i]))
+            for i in range(min_len)
+        )
+        print(f"✓ Decrypted plaintext: {len(recovered_plaintext)} bits")
+        
+        # Step 2: Convert binary back to tokens
+        bits_per_token = metadata.get('bits_per_token', 16)
         n_tokens = metadata['n_freq_tokens']
         recovered_tokens = []
+        invalid_count = 0
         
         for i in range(n_tokens):
-            start = i * 16
-            end = start + 16
-            if end <= len(recovered_bits):
-                token_bits = recovered_bits[start:end]
+            start = i * bits_per_token
+            end = start + bits_per_token
+            
+            if end <= len(recovered_plaintext):
+                token_bits = recovered_plaintext[start:end]
                 token_id = int(token_bits, 2)
-                recovered_tokens.append(token_id)
+                
+                # Validate token ID
+                vocab_size = len(self.tokenizer)
+                if 0 <= token_id < vocab_size:
+                    recovered_tokens.append(token_id)
+                else:
+                    # This indicates iMEC recovery error
+                    invalid_count += 1
+                    if invalid_count <= 5:
+                        print(f"⚠️  Invalid token {token_id} at position {i} (vocab size: {vocab_size})")
+                    # Use fallback
+                    recovered_tokens.append(self.tokenizer.unk_token_id if hasattr(self.tokenizer, 'unk_token_id') else 0)
+            else:
+                print(f"⚠️  Insufficient bits for token {i}")
+                break
+        
+        if invalid_count > 0:
+            print(f"\n⚠️  WARNING: {invalid_count}/{n_tokens} tokens were invalid after decryption!")
+            print(f"    This suggests iMEC encoding was incomplete or lossy.")
         
         print(f"\n✓ Recovered {len(recovered_tokens)} tokens")
         
